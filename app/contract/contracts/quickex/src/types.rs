@@ -36,8 +36,10 @@ pub enum EscrowStatus {
 pub struct EscrowEntry {
     /// Token contract address for the escrowed funds.
     pub token: Address,
-    /// Amount in token base units.
+    /// Total amount required to fully fund the escrow (in token base units).
     pub amount: i128,
+    /// Amount actually paid into the escrow so far.
+    pub amount_paid: i128,
     /// Owner who deposited and may refund after expiry.
     pub owner: Address,
     /// Current status (Pending, Spent, Refunded, Expired, Disputed).
@@ -72,8 +74,10 @@ pub struct EscrowEntry {
 pub struct PrivacyAwareEscrowView {
     /// Token contract address (always visible).
     pub token: Address,
-    /// Escrowed amount. `None` when privacy is enabled and caller is not the owner.
+    /// Total amount required to fully fund the escrow. `None` when privacy is enabled and caller is not the owner.
     pub amount: Option<i128>,
+    /// Amount actually paid so far. `None` when privacy is enabled and caller is not the owner.
+    pub amount_paid: Option<i128>,
     /// Owner address. `None` when privacy is enabled and caller is not the owner.
     pub owner: Option<Address>,
     /// Current lifecycle status (always visible).

@@ -65,6 +65,8 @@ pub enum PauseFlag {
     DepositWithCommitment = 8,
     SetPrivacy = 16,
     CreateAmountCommitment = 32,
+    CreatePaymentRequest = 64,
+    PartialPay = 128,
 }
 
 // -----------------------------------------------------------------------------

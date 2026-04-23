@@ -188,6 +188,7 @@ pub fn deposit(
     let entry = EscrowEntry {
         token, // moved
         amount,
+        amount_paid: amount,
         owner: owner.clone(),
         status: EscrowStatus::Pending,
         created_at: now,
@@ -274,6 +275,7 @@ pub fn deposit_with_commitment(
     let entry = EscrowEntry {
         token, // moved
         amount,
+        amount_paid: amount,
         owner: from, // moved
         status: EscrowStatus::Pending,
         created_at: now,
@@ -290,6 +292,147 @@ pub fn deposit_with_commitment(
         amount,
         expires_at,
     );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// create_payment_request
+// ---------------------------------------------------------------------------
+
+/// Create a payment request (unfunded escrow) keyed by `SHA256(owner || amount || salt)`.
+///
+/// - No tokens are transferred at creation time.
+/// - Sets `amount_paid` to `0`; the escrow must be funded via `partial_pay`.
+/// - If `timeout_secs > 0`, the escrow expires after that many seconds.
+/// - Optionally sets an `arbiter` who can resolve disputes.
+///
+/// # Errors
+/// - [`InvalidAmount`] – amount ≤ 0.
+/// - [`InvalidSalt`] – salt > 1024 bytes.
+/// - [`CommitmentAlreadyExists`] – commitment already in storage.
+pub fn create_payment_request(
+    env: &Env,
+    token: Address,
+    amount: i128,
+    owner: Address,
+    salt: Bytes,
+    timeout_secs: u64,
+    arbiter: Option<Address>,
+) -> Result<BytesN<32>, QuickexError> {
+    if amount <= 0 {
+        return Err(QuickexError::InvalidAmount);
+    }
+
+    owner.require_auth();
+
+    let expires_at = compute_expires_at(env, timeout_secs)?;
+    let commitment = commitment::create_amount_commitment(env, owner.clone(), amount, salt)?;
+    let now = env.ledger().timestamp();
+
+    let commitment_bytes: Bytes = commitment.clone().into();
+    if has_escrow(env, &commitment_bytes) {
+        return Err(QuickexError::CommitmentAlreadyExists);
+    }
+
+    let entry = EscrowEntry {
+        token,
+        amount,
+        amount_paid: 0,
+        owner: owner.clone(),
+        status: EscrowStatus::Pending,
+        created_at: now,
+        expires_at,
+        arbiter,
+    };
+
+    put_escrow(env, &commitment_bytes, &entry);
+
+    events::publish_escrow_deposited(
+        env,
+        commitment.clone(),
+        owner,
+        entry.token,
+        amount,
+        expires_at,
+    );
+
+    Ok(commitment)
+}
+
+// ---------------------------------------------------------------------------
+// partial_pay
+// ---------------------------------------------------------------------------
+
+/// Make a partial payment toward an existing payment request.
+///
+/// - The payer authorizes and transfers `payment` tokens to the contract.
+/// - `amount_paid` is incremented by `payment`.
+/// - Rejects overpayment: `amount_paid + payment > amount`.
+/// - Emits `EscrowPartialPayment` on every call.
+/// - Emits `EscrowFinalized` when `amount_paid` reaches `amount`.
+///
+/// # Errors
+/// - [`InvalidAmount`] – payment ≤ 0.
+/// - [`CommitmentNotFound`] – no escrow for the commitment.
+/// - [`AlreadySpent`] – escrow already in a terminal state.
+/// - [`InvalidDisputeState`] – escrow is disputed.
+/// - [`Overpayment`] – payment would exceed the remaining amount due.
+pub fn partial_pay(
+    env: &Env,
+    commitment: BytesN<32>,
+    payer: Address,
+    payment: i128,
+) -> Result<(), QuickexError> {
+    if payment <= 0 {
+        return Err(QuickexError::InvalidAmount);
+    }
+
+    payer.require_auth();
+
+    let commitment_bytes: Bytes = commitment.clone().into();
+    let entry: EscrowEntry =
+        get_escrow(env, &commitment_bytes).ok_or(QuickexError::CommitmentNotFound)?;
+
+    if entry.status != EscrowStatus::Pending {
+        if entry.status == EscrowStatus::Disputed {
+            return Err(QuickexError::InvalidDisputeState);
+        }
+        return Err(QuickexError::AlreadySpent);
+    }
+
+    let new_paid = entry.amount_paid.saturating_add(payment);
+    if new_paid > entry.amount {
+        return Err(QuickexError::Overpayment);
+    }
+
+    let token_client = token::Client::new(env, &entry.token);
+    token_client.transfer(&payer, env.current_contract_address(), &payment);
+
+    let mut updated = entry.clone();
+    updated.amount_paid = new_paid;
+    put_escrow(env, &commitment_bytes, &updated);
+
+    let remaining = updated.amount.saturating_sub(updated.amount_paid);
+
+    events::publish_escrow_partial_payment(
+        env,
+        commitment.clone(),
+        payer.clone(),
+        updated.token.clone(),
+        payment,
+        new_paid,
+        remaining,
+    );
+
+    if updated.amount_paid == updated.amount {
+        events::publish_escrow_finalized(
+            env,
+            commitment,
+            updated.token,
+            updated.amount,
+        );
+    }
 
     Ok(())
 }
@@ -342,6 +485,10 @@ pub fn withdraw(env: &Env, amount: i128, to: Address, salt: Bytes) -> Result<boo
 
     if entry.amount != amount {
         return Err(QuickexError::InvalidCommitment);
+    }
+
+    if entry.amount_paid < entry.amount {
+        return Err(QuickexError::NotFullyPaid);
     }
 
     // non-optimized: full EscrowEntry clone
@@ -430,9 +577,9 @@ pub fn refund(env: &Env, commitment: BytesN<32>, caller: Address) -> Result<(), 
     put_escrow(env, &commitment_bytes, &updated);
 
     let token_client = token::Client::new(env, &entry.token);
-    token_client.transfer(&env.current_contract_address(), &entry.owner, &entry.amount);
+    token_client.transfer(&env.current_contract_address(), &entry.owner, &entry.amount_paid);
 
-    events::publish_escrow_refunded(env, entry.owner, commitment, entry.token, entry.amount);
+    events::publish_escrow_refunded(env, entry.owner, commitment, entry.token, entry.amount_paid);
 
     Ok(())
 }
@@ -562,10 +709,10 @@ pub fn resolve_dispute(
     put_escrow(env, &commitment_bytes, &updated);
 
     let (payout_amount, fee_amount) = if final_status == EscrowStatus::Spent {
-        let fee = fee::calculate_fee(env, entry.amount);
-        (entry.amount.saturating_sub(fee), fee)
+        let fee = fee::calculate_fee(env, entry.amount_paid);
+        (entry.amount_paid.saturating_sub(fee), fee)
     } else {
-        (entry.amount, 0)
+        (entry.amount_paid, 0)
     };
 
     let token_client = token::Client::new(env, &entry.token);
@@ -586,14 +733,14 @@ pub fn resolve_dispute(
     }
 
     if resolve_for_owner {
-        events::publish_escrow_refunded(env, entry.owner, commitment, entry.token, entry.amount);
+        events::publish_escrow_refunded(env, entry.owner, commitment, entry.token, entry.amount_paid);
     } else {
         events::publish_escrow_withdrawn(
             env,
             commitment,
             recipient_address,
             entry.token,
-            entry.amount,
+            entry.amount_paid,
             fee_amount,
         );
     }

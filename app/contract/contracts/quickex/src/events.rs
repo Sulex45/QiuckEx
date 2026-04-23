@@ -204,6 +204,69 @@ pub(crate) fn publish_escrow_refunded(
     .publish(env);
 }
 
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowPartialPayment"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowPartialPaymentEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    #[topic]
+    pub payer: Address,
+
+    pub token: Address,
+    pub payment_amount: i128,
+    pub amount_paid_so_far: i128,
+    pub remaining: i128,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_escrow_partial_payment(
+    env: &Env,
+    escrow_id: BytesN<32>,
+    payer: Address,
+    token: Address,
+    payment_amount: i128,
+    amount_paid_so_far: i128,
+    remaining: i128,
+) {
+    EscrowPartialPaymentEvent {
+        escrow_id,
+        payer,
+        token,
+        payment_amount,
+        amount_paid_so_far,
+        remaining,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowFinalized"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowFinalizedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub token: Address,
+    pub total_amount: i128,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_escrow_finalized(
+    env: &Env,
+    escrow_id: BytesN<32>,
+    token: Address,
+    total_amount: i128,
+) {
+    EscrowFinalizedEvent {
+        escrow_id,
+        token,
+        total_amount,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
 // ---------------------------------------------------------------------------
 // Stealth address events (Privacy v2 – Issue #157)
 // ---------------------------------------------------------------------------

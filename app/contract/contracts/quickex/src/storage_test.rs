@@ -20,6 +20,7 @@ fn test_escrow_storage() {
         let entry = EscrowEntry {
             token: token.clone(),
             amount,
+            amount_paid: amount,
             owner: owner.clone(),
             status: EscrowStatus::Pending,
             created_at,
@@ -62,6 +63,7 @@ fn test_escrow_status_update() {
         let mut entry = EscrowEntry {
             token: token.clone(),
             amount,
+            amount_paid: amount,
             owner: owner.clone(),
             status: EscrowStatus::Pending,
             created_at,

@@ -307,6 +307,47 @@ impl QuickexContract {
         )
     }
 
+    /// Create a payment request (unfunded escrow).
+    ///
+    /// No tokens are transferred at creation. The escrow must be funded via
+    /// [`partial_pay`](QuickexContract::partial_pay).
+    pub fn create_payment_request(
+        env: Env,
+        token: Address,
+        amount: i128,
+        owner: Address,
+        salt: Bytes,
+        timeout_secs: u64,
+        arbiter: Option<Address>,
+    ) -> Result<BytesN<32>, QuickexError> {
+        if admin::is_paused(&env) {
+            return Err(QuickexError::ContractPaused);
+        }
+        if is_feature_paused(&env, PauseFlag::CreatePaymentRequest) {
+            return Err(QuickexError::OperationPaused);
+        }
+        escrow::create_payment_request(&env, token, amount, owner, salt, timeout_secs, arbiter)
+    }
+
+    /// Make a partial payment toward a payment request.
+    ///
+    /// Rejects overpayment. Emits `EscrowPartialPayment` and `EscrowFinalized`
+    /// when fully paid.
+    pub fn partial_pay(
+        env: Env,
+        commitment: BytesN<32>,
+        payer: Address,
+        payment: i128,
+    ) -> Result<(), QuickexError> {
+        if admin::is_paused(&env) {
+            return Err(QuickexError::ContractPaused);
+        }
+        if is_feature_paused(&env, PauseFlag::PartialPay) {
+            return Err(QuickexError::OperationPaused);
+        }
+        escrow::partial_pay(&env, commitment, payer, payment)
+    }
+
     /// Refund an expired escrow back to its original owner.
     ///
     /// Can only be called after `expires_at` is reached. The caller must be the
@@ -600,6 +641,7 @@ impl QuickexContract {
             Some(PrivacyAwareEscrowView {
                 token: entry.token,
                 amount: Some(entry.amount),
+                amount_paid: Some(entry.amount_paid),
                 owner: Some(entry.owner),
                 status: entry.status,
                 created_at: entry.created_at,
@@ -610,6 +652,7 @@ impl QuickexContract {
             Some(PrivacyAwareEscrowView {
                 token: entry.token,
                 amount: None,
+                amount_paid: None,
                 owner: None,
                 status: entry.status,
                 created_at: entry.created_at,

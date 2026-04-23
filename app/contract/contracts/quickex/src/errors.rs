@@ -40,6 +40,10 @@ pub enum QuickexError {
     NotArbiter = 312,
     /// The requested operation is paused via granular pause flags.
     OperationPaused = 313,
+    /// Payment would exceed the total amount due for the escrow.
+    Overpayment = 314,
+    /// Escrow is not yet fully paid; withdrawal is not allowed.
+    NotFullyPaid = 315,
     // Stealth address errors (400-499)
     /// Derived stealth address does not match the provided one.
     StealthAddressMismatch = 400,
